@@ -30,6 +30,7 @@ BlackDex 用于把 Android 应用运行时加载到内存中的 DEX 文件 dump 
   - ✅ 主动调用脱壳（cookie 模式下，用于对抗函数抽取壳）
   - ✅ 32 位应用脱壳（通过 Helper 辅助程序）
   - ✅ 双架构同时脱壳（32+64 位并行，结果分别保存）
+  - ✅ CompactDex 支持（从 vdex/oat 编译加载的 dex，保留 `cdex` magic 写出）
   - ❌ 深度脱壳（fixCodeItem）**未修复**：Android 13 起 `ArtMethod` 删除了 `dex_code_item_offset_`，原偏移计算逻辑失效，本仓库未修复，用「主动调用」代替。
 - **不做**：不包含任何针对加固厂商的过检测、反反调试等行为，能否脱出看壳的实现与运气。
 - 可能出现：脱不出东西、进程卡死、目标 app 异常退出等。属正常现象。
@@ -89,6 +90,7 @@ App (Application)
 - **Android 16+**：`LoadMethod` 不再从 libart.so 导出，改为 hook 仍导出的 `ClassLinker::LoadClass`（签名 `LoadClass(this, Thread*, const DexFile&, const dex::ClassDef&, Handle<mirror::Class>)`，DexFile 是第 3 个参数）。
 - hook 回调里复用 `handleDumpByDexFile`，按 size 去重后写出 `hook_<size>.dex`。
 - 同样使用运行时校准的 `beginOffset`，并做 size 合理性 + 整段可读性校验，避免布局偏移不对时 `memcpy` 越界崩溃。
+- **CompactDex 支持**：从已编译的 vdex/oat 加载的 dex（重复脱壳、系统自动编译）在内存中是 CompactDex（magic `cdex`）。`handleDumpByDexFile` 与 `cookieDumpDex` 会保留 `cdex` magic 而非覆盖成 `"dex\n035"`，让 `DexFileLoader::OpenAll` 按 CompactDex 正确解析并写出。写出的文件带 `cdex` magic，可用支持 CompactDex 的工具（如 jadx、`compact_dex_converter`）分析。
 
 #### 3. 主动调用脱壳（cookie 模式下，对抗函数抽取壳）
 
@@ -144,7 +146,7 @@ Android 16 上同一 APK 只能以一种 ABI 运行，64 位主 App 无法直接
 | Hook Dump | 开启 Hook 脱壳（hook `LoadClass`/`LoadMethod`），输出 `hook_*.dex`，提高成功率 |
 | Deep Unpacking（深度脱壳） | 修复被抽取的 DexCode（**Android 13+ 已失效，未修复**），开启会明显变慢且可能失败 |
 | Call Method（主动调用） | 运行时主动调用目标所有类，对抗函数抽取壳（仅 cookie 模式生效） |
-| Verify Dex Before Dump | dump 前校验 dex magic。部分加固会把内存中 dex magic 清零对抗脱壳，此时可关闭此项以 dump 出 magic 被破坏的 dex（写出时仍会回填 `dex\n035` magic） |
+| Verify Dex Before Dump | dump 前校验 dex magic。部分加固会把内存中 dex magic 清零对抗脱壳，此时可关闭此项以 dump 出 magic 被破坏的 dex（写出时仍会回填 `dex\n035` magic）。放行 StandardDex（`dex`）和 CompactDex（`cdex`） |
 | Enable 32-bit Compatibility | 启用 32 位兼容。安装 Helper 辅助程序后可脱壳 32 位应用 |
 | Install/Update Helper | 从 assets 安装或更新 32 位 Helper APK |
 | Dual-Architecture Dump | 目标同时包含 32/64 位时，同时执行两种架构的脱壳。结果分别保存到 `arm64/` 和 `arm32/` 子目录 |
@@ -257,6 +259,14 @@ $env:JAVA_HOME="D:\JDK\jdk11"; .\gradlew.bat :helper:assembleRelease; .\gradlew.
 ---
 
 ## 版本历史
+
+### v3.3.1
+
+- **修复重复 dump 相同目标脱不出 dex**：目标从已编译的 vdex/oat 加载时，dex 在内存中是 **CompactDex**（magic `cdex`）。原代码在 `OpenAll` 前无条件把 magic 覆盖成 `"dex\n035"`，破坏了 CompactDex 结构导致解析失败（`Unknown map section type f000`）。现在仅在原 magic 不是 CompactDex 时才修复 magic，`handleDumpByDexFile` 和 `cookieDumpDex` 均支持 CompactDex，dump 出的 `.dex` 文件保留 `cdex` magic（可用 jadx 或 `compact_dex_converter` 处理）
+- **修复双架构脱壳后续只显示主架构进度条**：`dumpDex` 在 IO 线程运行，`postValue(LOADING)` 与 `isDualDumping = true` 之间存在竞态，主线程可能在标志位置位前创建单架构模式的进度对话框。现将 `isDualDumping = true` 提前到 LOADING 通知之前，保证进度对话框始终以双架构模式创建
+- **修复 `ProgressDialog` 崩溃**：`show()` 是异步 commit，进度回调可能在 Fragment 尚未 attach 时访问 `viewBinding`（惰性 inflate 调用 `getLayoutInflater`）导致 `IllegalStateException`。所有 setter 在访问 `viewBinding` 前先判断 `isAdded`
+- **修复 Helper 超时任务泄漏**：300s 超时协程改为可取消的 `Job`，dump 完成时取消，避免旧超时误注销后续 dump 的 status receiver
+- **ARM32/64 完成状态回传**：Helper 完成广播现在也写入进度 LiveData，进度对话框能正确显示「✓ 成功」状态
 
 ### v3.3.0
 
