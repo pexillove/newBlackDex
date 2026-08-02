@@ -157,7 +157,6 @@ class MainActivity : PermissionActivity() {
                         }
                     }
                 }
-
             }
         }
 
@@ -168,11 +167,34 @@ class MainActivity : PermissionActivity() {
                 }
             }
         }
+
+        viewModel.mArm64ProgressLiveData.observe(this) { result ->
+            result?.let {
+                if (it.isRunning) {
+                    loadingView?.setArm64Progress(it.currProcess, it.totalProcess)
+                } else {
+                    loadingView?.setArm64Done(it.isSuccess)
+                }
+            }
+        }
+
+        viewModel.mArm32ProgressLiveData.observe(this) { result ->
+            result?.let {
+                if (it.isRunning) {
+                    loadingView?.setArm32Progress(it.currProcess, it.totalProcess)
+                } else {
+                    loadingView?.setArm32Done(it.isSuccess)
+                }
+            }
+        }
     }
 
     private val mMonitor = object : IBDumpMonitor.Stub() {
         override fun onDump(result: DumpResult?) {
             if (viewModel.isDualDumping()) {
+                if (result != null) {
+                    viewModel.onLocalDumpComplete(result)
+                }
                 return
             }
             result?.let {
@@ -231,7 +253,10 @@ class MainActivity : PermissionActivity() {
 
     private fun showLoading() {
         if (this.loadingView == null) {
-            loadingView = ProgressDialog()
+            loadingView = ProgressDialog.newInstance(viewModel.isDualDumping())
+        }
+        loadingView?.setOnFinishListener {
+            viewModel.finishDualDump()
         }
         loadingView?.show(supportFragmentManager, "")
     }

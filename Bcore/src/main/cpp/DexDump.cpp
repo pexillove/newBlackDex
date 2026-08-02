@@ -95,8 +95,11 @@ void handleDumpByDexFile(void *dex_file) {
     void *buffer = malloc(size);
     if (buffer) {
         memcpy(buffer, beginBytes, size);
-        // fix magic
-        memcpy(buffer, magic, sizeof(magic));
+        // fix magic（仅修复StandardDex被加固清零的magic；保持CompactDex的cdex标志，
+        // 否则覆盖成"dex"会破坏CompactDex结构导致解析失败）
+        if (!art_lkchan::CompactDexFile::IsMagicValid(beginBytes)) {
+            memcpy(buffer, magic, sizeof(magic));
+        }
 
         const bool kVerifyChecksum = false;
         const bool kVerify = true;
@@ -338,9 +341,12 @@ void DexDump::cookieDumpDex(JNIEnv *env, jlong cookie, jstring dir, jboolean fix
     auto beginBytes = reinterpret_cast<const uint8_t *>(begin);
     //可选：校验dex magic，过滤掉非DexFile的cookie（如mCookie[0]的OatFile指针）。
     //部分加固会把内存中dex magic清零来对抗脱壳，此时可关闭该选项以dump出magic被破坏的dex。
+    //同时放行CompactDex（cdex），否则从vdex编译加载的dex会被跳过。
     if (verify) {
-        if (beginBytes[0] != 0x64 || beginBytes[1] != 0x65 ||
-            beginBytes[2] != 0x78 || beginBytes[3] != 0x0a) {
+        bool isStandardDex = (beginBytes[0] == 0x64 && beginBytes[1] == 0x65 &&
+                              beginBytes[2] == 0x78 && beginBytes[3] == 0x0a);
+        bool isCompactDex = art_lkchan::CompactDexFile::IsMagicValid(beginBytes);
+        if (!isStandardDex && !isCompactDex) {
             return;
         }
     }
@@ -361,8 +367,10 @@ void DexDump::cookieDumpDex(JNIEnv *env, jlong cookie, jstring dir, jboolean fix
     }
     //如果地址可用（申请成功）把dex数据复制到新地址
     memcpy(buffer, reinterpret_cast<const void *>(begin), size);
-    // fix magic
-    memcpy(buffer, magic, sizeof(magic));
+    // fix magic（仅修复StandardDex被清零的magic；保持CompactDex的cdex标志）
+    if (!art_lkchan::CompactDexFile::IsMagicValid(beginBytes)) {
+        memcpy(buffer, magic, sizeof(magic));
+    }
 
     const bool kVerifyChecksum = false;
     const bool kVerify = true;

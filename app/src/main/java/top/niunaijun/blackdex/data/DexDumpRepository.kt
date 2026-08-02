@@ -4,7 +4,9 @@ import android.content.pm.ApplicationInfo
 import android.net.Uri
 import android.webkit.URLUtil
 import androidx.lifecycle.MutableLiveData
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import top.niunaijun.blackbox.BlackBoxCore
@@ -28,7 +30,10 @@ class DexDumpRepository {
     private var dualArm32Done = false
     private var dualArm64Result: DumpInfo? = null
     private var dualArm32Result: DumpInfo? = null
+    @Volatile
     var isDualDumping = false
+    var onLocalDumpComplete: ((DumpResult) -> Unit)? = null
+    private var helperTimeoutJob: Job? = null
 
     fun getAppList(mAppListLiveData: MutableLiveData<List<AppInfo>>) {
         val installedApplications: List<ApplicationInfo> =
@@ -62,10 +67,10 @@ class DexDumpRepository {
     fun dumpDex(
         source: String,
         dexDumpLiveData: MutableLiveData<DumpInfo>,
-        progressLiveData: MutableLiveData<DumpResult>
+        progressLiveData: MutableLiveData<DumpResult>,
+        arm64ProgressLiveData: MutableLiveData<DumpResult>? = null,
+        arm32ProgressLiveData: MutableLiveData<DumpResult>? = null
     ) {
-        dexDumpLiveData.postValue(DumpInfo(DumpInfo.LOADING))
-
         val abiType = detectAbiFromSource(source)
         val isDualArch = AppManager.mBlackBoxLoader.isDualArchDump()
         val is32BitCompat = AppManager.mBlackBoxLoader.is32BitCompat()
@@ -73,11 +78,13 @@ class DexDumpRepository {
 
         if (isDualArch && abiType == AbiUtils.AbiType.BOTH && isPkgName && is32BitCompat) {
             if (!checkHelperReady(dexDumpLiveData)) return
-            startDualDump(source, dexDumpLiveData, progressLiveData)
+            startDualDump(source, dexDumpLiveData, arm64ProgressLiveData, arm32ProgressLiveData)
         } else if (abiType == AbiUtils.AbiType.ARM32_ONLY && isPkgName && is32BitCompat) {
             if (!checkHelperReady(dexDumpLiveData)) return
-            dumpViaHelper(source, dexDumpLiveData, progressLiveData, null)
+            dexDumpLiveData.postValue(DumpInfo(DumpInfo.LOADING))
+            dumpViaHelper(source, dexDumpLiveData, progressLiveData, null, "")
         } else {
+            dexDumpLiveData.postValue(DumpInfo(DumpInfo.LOADING))
             dumpLocally(source, dexDumpLiveData)
         }
     }
@@ -99,16 +106,40 @@ class DexDumpRepository {
     private fun startDualDump(
         source: String,
         dexDumpLiveData: MutableLiveData<DumpInfo>,
-        progressLiveData: MutableLiveData<DumpResult>
+        arm64ProgressLiveData: MutableLiveData<DumpResult>?,
+        arm32ProgressLiveData: MutableLiveData<DumpResult>?
     ) {
         dualArm64Done = false
         dualArm32Done = false
         dualArm64Result = null
         dualArm32Result = null
         isDualDumping = true
+        helperTimeoutJob?.cancel()
+        helperTimeoutJob = null
+        dexDumpLiveData.postValue(DumpInfo(DumpInfo.LOADING))
+
+        arm64ProgressLiveData?.postValue(DumpResult())
+        arm32ProgressLiveData?.postValue(DumpResult())
 
         val loader = AppManager.mBlackBoxLoader
         val baseDir = loader.getBaseDumpDir()
+
+        onLocalDumpComplete = { result ->
+            if (result.isRunning) {
+                arm64ProgressLiveData?.postValue(result)
+            } else {
+                arm64ProgressLiveData?.postValue(result)
+                dualArm64Done = true
+                dualArm64Result = if (result.isSuccess) {
+                    DumpInfo(DumpInfo.SUCCESS,
+                        App.getContext().getString(R.string.dex_save, result.dir))
+                } else {
+                    DumpInfo(DumpInfo.FAIL,
+                        App.getContext().getString(R.string.error_msg, result.msg))
+                }
+                checkDualComplete(dexDumpLiveData)
+            }
+        }
 
         dumpLocally(source, object : MutableLiveData<DumpInfo>() {
             override fun postValue(value: DumpInfo?) {
@@ -131,12 +162,15 @@ class DexDumpRepository {
                     checkDualComplete(dexDumpLiveData)
                 }
             }
-        }, progressLiveData, helperDumpDir, "arm32")
+        }, arm32ProgressLiveData ?: MutableLiveData(), helperDumpDir, "arm32")
     }
 
     private fun checkDualComplete(dexDumpLiveData: MutableLiveData<DumpInfo>) {
         if (dualArm64Done && dualArm32Done) {
             isDualDumping = false
+            onLocalDumpComplete = null
+            helperTimeoutJob?.cancel()
+            helperTimeoutJob = null
             val r64 = dualArm64Result
             val r32 = dualArm32Result
             val msg = buildString {
@@ -153,6 +187,40 @@ class DexDumpRepository {
             }
             dexDumpLiveData.postValue(DumpInfo(state, msg))
         }
+    }
+
+    fun finishDualDump(dexDumpLiveData: MutableLiveData<DumpInfo>) {
+        if (!isDualDumping) return
+        isDualDumping = false
+        onLocalDumpComplete = null
+        helperTimeoutJob?.cancel()
+        helperTimeoutJob = null
+        HelperManager.unregisterStatusReceiver(App.getContext())
+        val r64 = dualArm64Result
+        val r32 = dualArm32Result
+        val msg = buildString {
+            append("ARM64: ")
+            append(when {
+                r64?.state == DumpInfo.SUCCESS -> "成功"
+                r64?.state == DumpInfo.FAIL -> "失败"
+                r64 != null -> "超时"
+                else -> "进行中"
+            })
+            if (r64?.msg?.isNotBlank() == true) append("\n  ${r64.msg}")
+            append("\nARM32: ")
+            append(when {
+                r32?.state == DumpInfo.SUCCESS -> "成功"
+                r32?.state == DumpInfo.FAIL -> "失败"
+                r32 != null -> "超时"
+                else -> "进行中"
+            })
+            if (r32?.msg?.isNotBlank() == true) append("\n  ${r32.msg}")
+        }
+        val state = when {
+            r64?.state == DumpInfo.SUCCESS || r32?.state == DumpInfo.SUCCESS -> DumpInfo.SUCCESS
+            else -> DumpInfo.FAIL
+        }
+        dexDumpLiveData.postValue(DumpInfo(state, msg))
     }
 
     private fun detectAbiFromSource(source: String): AbiUtils.AbiType {
@@ -202,10 +270,14 @@ class DexDumpRepository {
                 progressLiveData.postValue(result)
             } else if (result.isSuccess) {
                 HelperManager.unregisterStatusReceiver(App.getContext())
+                helperTimeoutJob?.cancel()
+                progressLiveData.postValue(result)
                 dexDumpLiveData.postValue(DumpInfo(DumpInfo.SUCCESS,
                     App.getContext().getString(R.string.dex_save, result.dir)))
             } else if (result.isFail) {
                 HelperManager.unregisterStatusReceiver(App.getContext())
+                helperTimeoutJob?.cancel()
+                progressLiveData.postValue(result)
                 dexDumpLiveData.postValue(DumpInfo(DumpInfo.FAIL,
                     App.getContext().getString(R.string.error_msg, result.msg)))
             }
@@ -225,7 +297,7 @@ class DexDumpRepository {
             return
         }
 
-        GlobalScope.launch {
+        helperTimeoutJob = GlobalScope.launch(Dispatchers.Main) {
             delay(300000)
             HelperManager.unregisterStatusReceiver(App.getContext())
             dexDumpLiveData.postValue(DumpInfo(DumpInfo.TIMEOUT))
@@ -240,7 +312,7 @@ class DexDumpRepository {
         GlobalScope.launch {
             val tempId = dumpTaskId
             while (BlackDexCore.get().isRunning) {
-                delay(20000)
+                delay(3000)
                 if (!AppManager.mBlackBoxLoader.isFixCodeItem()) {
                     break
                 }

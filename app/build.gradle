@@ -13,8 +13,8 @@ android {
         //给安卓14做适配sdk下意识就写34了，申请不到WRITE_EXTERNAL_STORAGE权限还去找申请权限的代码问题
         //noinspection ExpiredTargetSdkVersion
         targetSdkVersion 30
-        versionCode 11
-        versionName "3.3.0"
+        versionCode 21
+        versionName "3.3.1"
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         flavorDimensions "BlackDex64"

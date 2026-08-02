@@ -10,29 +10,33 @@ import top.niunaijun.blackbox.entity.dump.DumpResult
 class MainViewModel(private val repo: DexDumpRepository) : BaseViewModel() {
 
     val mAppListLiveData = MutableLiveData<List<AppInfo>>()
-
     val mDexDumpLiveData = MutableLiveData<DumpInfo>()
-
     val mProgressLiveData = MutableLiveData<DumpResult>()
-
-    fun isDualDumping(): Boolean = repo.isDualDumping
+    val mArm64ProgressLiveData = MutableLiveData<DumpResult>()
+    val mArm32ProgressLiveData = MutableLiveData<DumpResult>()
 
     fun getAppList() {
-        launchOnUI {
-            repo.getAppList(mAppListLiveData)
-        }
+        launchOnUI { repo.getAppList(mAppListLiveData) }
     }
 
     fun startDexDump(source: String) {
         launchOnUI {
-            repo.dumpDex(source, mDexDumpLiveData, mProgressLiveData)
+            repo.dumpDex(source, mDexDumpLiveData, mProgressLiveData,
+                mArm64ProgressLiveData, mArm32ProgressLiveData)
         }
     }
 
     fun dexDumpSuccess() {
-        launchOnUI {
-            repo.dumpSuccess()
-        }
+        launchOnUI { repo.dumpSuccess() }
     }
 
+    fun isDualDumping(): Boolean = repo.isDualDumping
+
+    fun onLocalDumpComplete(result: DumpResult) {
+        repo.onLocalDumpComplete?.invoke(result)
+    }
+
+    fun finishDualDump() {
+        repo.finishDualDump(mDexDumpLiveData)
+    }
 }
