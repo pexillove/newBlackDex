@@ -3,6 +3,7 @@
 Android DEX 脱壳工具。基于 [BlackDex](https://github.com/CodingGay/BlackDex) 的复活/移植分支，向上兼容到 Android 14 以上（主要在 Android 16 / HyperOS 上测试），并修复了原项目在高版本上无法运行的一系列问题。
 
 > 原项目作者：CodingGay。本仓库仅做向上兼容和 Bug 修复，不包含任何针对各加固厂商的过检测逻辑。
+> 根据原仓库开源协议Apache 2.0，在BlackDex-LICENSE中声明原仓库协议。原仓库中未创建NOTICE文件，本仓库也没有复制。本仓库使用**AGPL2开源协议**
 
 ---
 
